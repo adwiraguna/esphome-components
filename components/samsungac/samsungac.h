@@ -133,10 +133,6 @@ union SamsungProtocol{
   
 };
 
-// Temperature
-const uint8_t TEMP_MIN = 16;  // Celsius
-const uint8_t TEMP_MAX = 30;  // Celsius
-
 const uint32_t SAMSUNGAC_HEADER_MARK = 600;
 const uint32_t SAMSUNGAC_HEADER_SPACE = 18000;
 const uint8_t SAMSUNGAC_SECTIONS = 2;
@@ -152,8 +148,7 @@ const uint16_t SAMSUNGAC_EXTENDED_LENGTH = 21;
 
 
 const uint8_t SAMSUNGAC_MIN_TEMP  = 16;  // C   Mask 0b11110000
-const uint8_t kSamsungAcMaxTemp  = 30;  // C   Mask 0b11110000
-const uint8_t kSamsungAcAutoTemp = 25;  // C   Mask 0b11110000
+const uint8_t SAMSUNGAC_MAX_TEMP  = 30;  // C   Mask 0b11110000
 const uint8_t SAMSUNGAC_MODE_AUTO = 0;
 const uint8_t SAMSUNGAC_MODE_COOL = 1;
 const uint8_t SAMSUNGAC_MODE_DRY = 2;
@@ -175,17 +170,12 @@ const uint8_t SAMSUNGAC_SWING_VERTICAL = 0b010; //2
 const uint8_t SAMSUNGAC_SWING_HORIZONTAL = 0b011; //3
 const uint8_t SAMSUNGAC_SWING_BOTH = 0b100; //4
 const uint8_t SAMSUNGAC_SWING_OFF = 0b111; //7
-// _.FanSpecial
-const uint8_t kSamsungAcFanSpecialOff = 0b000;
-const uint8_t kSamsungAcPowerfulOn =    0b011;
-const uint8_t kSamsungAcBreezeOn =      0b101;
-const uint8_t kSamsungAcEconoOn =       0b111;
 
 
 class SamsungAC : public climate_ir::ClimateIR {
  public:
   SamsungAC()
-      : climate_ir::ClimateIR(TEMP_MIN, TEMP_MAX, 1.0f, true, true,
+      : climate_ir::ClimateIR(SAMSUNGAC_MIN_TEMP, SAMSUNGAC_MAX_TEMP, 1.0f, true, true,
                               {climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM,
                                climate::CLIMATE_FAN_HIGH},
                               {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL}) {}
