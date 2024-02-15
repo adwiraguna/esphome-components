@@ -2,6 +2,8 @@
 
 This repository contains a collection of my custom components for [ESPHome](https://esphome.io/).
 
+If you like my work Buy me a coffee.
+
 [!["Buy Me A Coffee"](https://github.com/adwiraguna/esphome-components/blob/main/images/bmc_qr_small.png)](https://www.buymeacoffee.com/adwiraguna)
 
 ## 1. Usage
@@ -40,5 +42,5 @@ climate:
     name: "Living Room AC"
     receiver_id: ir_receiver
 ```
-#### 2.2.2. Credits
+#### 2.1.2. Credits
 Based on [IRremoteESP8266](https://github.com/crankyoldgit/IRremoteESP8266)
