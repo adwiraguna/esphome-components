@@ -8,13 +8,8 @@ AUTO_LOAD = ["climate_ir"]
 samsunac_ns = cg.esphome_ns.namespace("samsungac")
 SamsungAC = samsunac_ns.class_("SamsungAC", climate_ir.ClimateIR)
 
-CONFIG_SCHEMA = climate_ir.CLIMATE_IR_WITH_RECEIVER_SCHEMA.extend(
-    {
-        cv.GenerateID(): cv.declare_id(SamsungAC),
-    }
-)
+CONFIG_SCHEMA = climate_ir.climate_ir_with_receiver_schema(SamsungAC)
 
 
 async def to_code(config):
-    var = cg.new_Pvariable(config[CONF_ID])
-    await climate_ir.register_climate_ir(var, config)
+    var = await climate_ir.new_climate_ir(config)
