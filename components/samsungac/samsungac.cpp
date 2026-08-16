@@ -89,7 +89,9 @@ uint8_t SamsungAC::fan_mode_() {
   
   if(this->mode == climate::CLIMATE_MODE_DRY) {return SAMSUNGAC_FAN_AUTO;}
 
-  switch (this->fan_mode.value()){
+  if(!this->fan_mode.has_value()) {return SAMSUNGAC_FAN_AUTO;}
+
+  switch (*this->fan_mode){
     case climate::CLIMATE_FAN_HIGH:
       return SAMSUNGAC_FAN_HIGH;
     case climate::CLIMATE_FAN_MEDIUM:
@@ -128,7 +130,11 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
 
   if (!data.expect_item(SAMSUNGAC_HEADER_MARK, SAMSUNGAC_HEADER_SPACE)){return false;}
 
-  for (uint8_t section = 0; section <= (data.size() / (2 * 8)) / SAMSUNGAC_SECTION_LENGTH; section++) {
+  // Cap iterations at SAMSUNGAC_MAX_SECTIONS (the actual capacity of remote_state.raw)
+  // rather than deriving the bound from data.size(), which comes from the received signal
+  // and previously could exceed the buffer and write out of bounds. expect_item()/
+  // expect_space() below already stop us early if the signal is shorter than expected.
+  for (uint8_t section = 0; section < SAMSUNGAC_MAX_SECTIONS; section++) {
     if (!data.expect_item(SAMSUNGAC_SECTION_MARK, SAMSUNGAC_SECTION_SPACE)){return false;}
 
     for(uint8_t pos = 0; pos < SAMSUNGAC_SECTION_LENGTH; pos++){
@@ -236,7 +242,12 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
       break;
   }
 
-  this->target_temperature = target_temperature + SAMSUNGAC_MIN_TEMP;
+  // Clamp: target_temperature is decoded from a raw 4-bit field, so a bit error could
+  // otherwise report a temperature outside the unit's supported range.
+  float decoded_temperature = target_temperature + SAMSUNGAC_MIN_TEMP;
+  if (decoded_temperature > SAMSUNGAC_MAX_TEMP) decoded_temperature = SAMSUNGAC_MAX_TEMP;
+  if (decoded_temperature < SAMSUNGAC_MIN_TEMP) decoded_temperature = SAMSUNGAC_MIN_TEMP;
+  this->target_temperature = decoded_temperature;
 
   this->publish_state();
   return true;

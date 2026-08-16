@@ -135,7 +135,6 @@ union SamsungProtocol{
 
 const uint32_t SAMSUNGAC_HEADER_MARK = 600;
 const uint32_t SAMSUNGAC_HEADER_SPACE = 18000;
-const uint8_t SAMSUNGAC_SECTIONS = 2;
 const uint16_t SAMSUNGAC_SECTION_MARK = 3000;
 const uint16_t SAMSUNGAC_SECTION_SPACE = 9000;
 const uint16_t SAMSUNGAC_SECTION_GAP = 3000;
@@ -145,6 +144,9 @@ const uint16_t SAMSUNGAC_ZERO_SPACE = 470;
 const uint16_t SAMSUNGAC_SECTION_LENGTH = 7;
 const uint16_t SAMSUNGAC_MESSAGE_LENGTH = 14;
 const uint16_t SAMSUNGAC_EXTENDED_LENGTH = 21;
+// Hard cap on how many sections on_receive() may decode into SamsungProtocol::raw.
+// Derived from the storage size, not from the (untrusted) length of the received signal.
+const uint8_t SAMSUNGAC_MAX_SECTIONS = SAMSUNGAC_EXTENDED_LENGTH / SAMSUNGAC_SECTION_LENGTH;
 
 
 const uint8_t SAMSUNGAC_MIN_TEMP  = 16;  // C   Mask 0b11110000
@@ -178,11 +180,20 @@ class SamsungAC : public climate_ir::ClimateIR {
       : climate_ir::ClimateIR(SAMSUNGAC_MIN_TEMP, SAMSUNGAC_MAX_TEMP, 1.0f, true, true,
                               {climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM,
                                climate::CLIMATE_FAN_HIGH},
-                              {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL}) {}
+                              {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL,
+                               climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH}) {}
   void control(const climate::ClimateCall &call){
-    if(call.get_fan_mode().has_value() 
-        && *call.get_fan_mode() != climate::CLIMATE_FAN_AUTO 
-        && (this->mode == climate::CLIMATE_MODE_AUTO || this->mode == climate::CLIMATE_MODE_DRY )){
+    // The unit ignores the requested fan speed while in Auto/Dry mode (fan_mode_() always
+    // forces it to Auto for transmission), so a fan-speed change alone is a no-op there.
+    // Coerce it to Auto and still apply the rest of the call instead of dropping the whole
+    // call, which used to also discard any bundled temperature/mode/swing change.
+    auto target_mode = call.get_mode().has_value() ? *call.get_mode() : this->mode;
+    if(call.get_fan_mode().has_value()
+        && *call.get_fan_mode() != climate::CLIMATE_FAN_AUTO
+        && (target_mode == climate::CLIMATE_MODE_AUTO || target_mode == climate::CLIMATE_MODE_DRY)){
+      climate::ClimateCall adjusted_call = call;
+      adjusted_call.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+      climate_ir::ClimateIR::control(adjusted_call);
       return;
     }
 
