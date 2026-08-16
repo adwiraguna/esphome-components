@@ -3,6 +3,7 @@
 #include "esphome/components/climate_ir/climate_ir.h"
 
 #include <cinttypes>
+#include <string>
 
 namespace esphome {
 namespace samsungac {
@@ -173,6 +174,14 @@ const uint8_t SAMSUNGAC_SWING_HORIZONTAL = 0b011; //3
 const uint8_t SAMSUNGAC_SWING_BOTH = 0b100; //4
 const uint8_t SAMSUNGAC_SWING_OFF = 0b111; //7
 
+// _.FanSpecial - mutually exclusive extra modes, only sent as part of a normal
+// (14-byte) state-update message. Values verified against IRremoteESP8266's
+// ir_Samsung.cpp (kSamsungAcFanSpecialOff/PowerfulOn/BreezeOn/EconoOn).
+const uint8_t SAMSUNGAC_FAN_SPECIAL_OFF = 0b000;       // 0
+const uint8_t SAMSUNGAC_FAN_SPECIAL_POWERFUL = 0b011;  // 3
+const uint8_t SAMSUNGAC_FAN_SPECIAL_WINDFREE = 0b101;  // 5 (aka "Breeze")
+const uint8_t SAMSUNGAC_FAN_SPECIAL_ECONO = 0b111;     // 7
+
 
 class SamsungAC : public climate_ir::ClimateIR {
  public:
@@ -200,6 +209,42 @@ class SamsungAC : public climate_ir::ClimateIR {
     climate_ir::ClimateIR::control(call);
   }
 
+  /// Set the display (front panel light) toggle and immediately transmit it, unless the
+  /// unit is off (these bits only exist in the normal state-update message, not the
+  /// power on/off message, so there's nothing useful to send while off).
+  void set_display(bool state) {
+    this->display_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the ioniser/purifier toggle and immediately transmit it.
+  void set_ion(bool state) {
+    this->ion_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the beeper toggle and immediately transmit it.
+  void set_beep(bool state) {
+    this->beep_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the mutually-exclusive special fan mode ("Off"/"Powerful"/"WindFree"/"Econo")
+  /// and immediately transmit it. Unrecognised values are treated as "Off".
+  void set_special_mode(const std::string &mode) {
+    if (mode == "Powerful") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_POWERFUL;
+    } else if (mode == "WindFree") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_WINDFREE;
+    } else if (mode == "Econo") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_ECONO;
+    } else {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_OFF;
+    }
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+
  protected:
   /// Transmit via IR the state of this climate controller.
   void transmit_state() override;
@@ -221,7 +266,14 @@ class SamsungAC : public climate_ir::ClimateIR {
   uint8_t swing_mode_();
   uint8_t target_temperature_();
 
-  climate::ClimateMode mode_before_{climate::CLIMATE_MODE_OFF}; 
+  climate::ClimateMode mode_before_{climate::CLIMATE_MODE_OFF};
+
+  // Extra toggles exposed via the samsungac switch/select platforms. These only take
+  // effect in the normal (14-byte) state-update message; see transmit_state().
+  bool display_{false};
+  bool ion_{false};
+  bool beep_{false};
+  uint8_t special_mode_{SAMSUNGAC_FAN_SPECIAL_OFF};
 };
 
 }  // namespace samsungac

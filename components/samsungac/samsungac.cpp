@@ -62,6 +62,30 @@ void SamsungAC::transmit_state() {
     remote_state.Swing = this->swing_mode_();
     remote_state.Temp= this->target_temperature_();
 
+    remote_state.FanSpecial = this->special_mode_;
+    remote_state.Display = this->display_;
+    remote_state.Ion = this->ion_;
+    remote_state.BeepToggle = this->beep_;
+
+    // Powerful/Econo/WindFree each imply a fixed fan+swing combination on real Samsung
+    // remotes (see IRremoteESP8266's setPowerful/setEcono/setBreeze); mirror that so we
+    // don't send a fan/swing + special-mode combination the unit's firmware never expects.
+    switch (this->special_mode_) {
+      case SAMSUNGAC_FAN_SPECIAL_POWERFUL:
+        remote_state.Fan = SAMSUNGAC_FAN_TURBO;
+        break;
+      case SAMSUNGAC_FAN_SPECIAL_ECONO:
+        remote_state.Fan = SAMSUNGAC_FAN_AUTO;
+        remote_state.Swing = SAMSUNGAC_SWING_VERTICAL;
+        break;
+      case SAMSUNGAC_FAN_SPECIAL_WINDFREE:
+        remote_state.Fan = SAMSUNGAC_FAN_AUTO;
+        remote_state.Swing = SAMSUNGAC_SWING_OFF;
+        break;
+      default:
+        break;
+    }
+
     this->transmit_(remote_state, SAMSUNGAC_MESSAGE_LENGTH);
   }
 }
