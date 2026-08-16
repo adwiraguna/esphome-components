@@ -14,9 +14,9 @@ SamsungACSwitch = samsungac_ns.class_("SamsungACSwitch", switch.Switch)
 SamsungACSwitchType = samsungac_ns.enum("SamsungACSwitchType", is_class=True)
 
 SWITCH_TYPES = {
-    CONF_DISPLAY: SamsungACSwitchType.DISPLAY,
-    CONF_ION: SamsungACSwitchType.ION,
-    CONF_BEEP: SamsungACSwitchType.BEEP,
+    CONF_DISPLAY: SamsungACSwitchType.SWITCH_DISPLAY,
+    CONF_ION: SamsungACSwitchType.SWITCH_ION,
+    CONF_BEEP: SamsungACSwitchType.SWITCH_BEEP,
 }
 
 # A single `switch:` platform entry here can yield up to three sub-switches (display/
