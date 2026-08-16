@@ -192,7 +192,7 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
 
   if(remote_state.Power1 == remote_state.Power3)
   {
-    mode = (remote_state.Power3 == SAMSUNGAC_POWER_OFF? 5 : remote_state.Mode2);
+    mode = (remote_state.Power3 == SAMSUNGAC_POWER_OFF? SAMSUNGAC_MODE_OFF_SENTINEL : remote_state.Mode2);
     fan_mode = remote_state.Fan2;
     swing_mode = remote_state.Swing2;
     target_temperature = remote_state.Temp2;
@@ -229,7 +229,7 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
         return false;
       this->mode = climate::CLIMATE_MODE_HEAT;
       break;
-    case 5:
+    case SAMSUNGAC_MODE_OFF_SENTINEL:
       this->mode = climate::CLIMATE_MODE_OFF;
   }
 
@@ -277,9 +277,9 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
   return true;
 }
 
-void SamsungAC::transmit_(SamsungProtocol state, uint16_t length) {  
+void SamsungAC::transmit_(SamsungProtocol &state, uint16_t length) {
 
-  checksum(state);
+  checksum(state, length);
 
   auto transmit = this->transmitter_->transmit();
   auto *data = transmit.get_data();
@@ -365,13 +365,20 @@ uint16_t SamsungAC::countBits(const uint64_t data, const uint8_t length, const b
     return length - count;
 }
 
-void SamsungAC::checksum(SamsungProtocol & state) {
+void SamsungAC::checksum(SamsungProtocol &state, uint16_t length) {
+  // Only checksum the sections that are actually part of this message; the 14-byte
+  // normal message has no 3rd section, and computing/writing one anyway meant reading
+  // whatever bytes happened to follow it in the union for no reason.
   uint8_t sectionsum = calcSectionChecksum(state.raw);
   state.Sum1Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum1Lower = GETBITS8(sectionsum, 0, 4);
+  if (length < SAMSUNGAC_SECTION_LENGTH * 2)
+    return;
   sectionsum = calcSectionChecksum(state.raw + SAMSUNGAC_SECTION_LENGTH);
   state.Sum2Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum2Lower = GETBITS8(sectionsum, 0, 4);
+  if (length < SAMSUNGAC_SECTION_LENGTH * 3)
+    return;
   sectionsum = calcSectionChecksum(state.raw + SAMSUNGAC_SECTION_LENGTH * 2);
   state.Sum3Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum3Lower = GETBITS8(sectionsum, 0, 4);

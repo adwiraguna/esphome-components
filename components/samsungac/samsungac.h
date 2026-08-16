@@ -157,6 +157,9 @@ const uint8_t SAMSUNGAC_MODE_COOL = 1;
 const uint8_t SAMSUNGAC_MODE_DRY = 2;
 const uint8_t SAMSUNGAC_MODE_FAN = 3;
 const uint8_t SAMSUNGAC_MODE_HEAT = 4;
+// Not a real value of the protocol's 3-bit Mode field (which only uses 0-4 above); used
+// internally in on_receive() as a sentinel meaning "the unit reported itself powered off".
+const uint8_t SAMSUNGAC_MODE_OFF_SENTINEL = 5;
 const uint8_t SAMSUNGAC_FAN_AUTO = 0;
 const uint8_t SAMSUNGAC_FAN_LOW = 2;
 const uint8_t SAMSUNGAC_FAN_MED = 4;
@@ -252,11 +255,11 @@ class SamsungAC : public climate_ir::ClimateIR {
   bool on_receive(remote_base::RemoteReceiveData data) override;
 
  private:
-  void transmit_(SamsungProtocol state, uint16_t length);
+  void transmit_(SamsungProtocol &state, uint16_t length);
   bool validChecksum(const uint8_t state[], const uint16_t length);
   uint8_t getSectionChecksum(const uint8_t *section);
   uint8_t calcSectionChecksum(const uint8_t *section);
-  void checksum(SamsungProtocol & state);
+  void checksum(SamsungProtocol &state, uint16_t length);
   uint16_t countBits(const uint8_t * const start, const uint16_t length,
                    const bool ones = true, const uint16_t init = 0);
   uint16_t countBits(const uint64_t data, const uint8_t length,
