@@ -62,6 +62,30 @@ void SamsungAC::transmit_state() {
     remote_state.Swing = this->swing_mode_();
     remote_state.Temp= this->target_temperature_();
 
+    remote_state.FanSpecial = this->special_mode_;
+    remote_state.Display = this->display_;
+    remote_state.Ion = this->ion_;
+    remote_state.BeepToggle = this->beep_;
+
+    // Powerful/Econo/WindFree each imply a fixed fan+swing combination on real Samsung
+    // remotes (see IRremoteESP8266's setPowerful/setEcono/setBreeze); mirror that so we
+    // don't send a fan/swing + special-mode combination the unit's firmware never expects.
+    switch (this->special_mode_) {
+      case SAMSUNGAC_FAN_SPECIAL_POWERFUL:
+        remote_state.Fan = SAMSUNGAC_FAN_TURBO;
+        break;
+      case SAMSUNGAC_FAN_SPECIAL_ECONO:
+        remote_state.Fan = SAMSUNGAC_FAN_AUTO;
+        remote_state.Swing = SAMSUNGAC_SWING_VERTICAL;
+        break;
+      case SAMSUNGAC_FAN_SPECIAL_WINDFREE:
+        remote_state.Fan = SAMSUNGAC_FAN_AUTO;
+        remote_state.Swing = SAMSUNGAC_SWING_OFF;
+        break;
+      default:
+        break;
+    }
+
     this->transmit_(remote_state, SAMSUNGAC_MESSAGE_LENGTH);
   }
 }
@@ -89,7 +113,9 @@ uint8_t SamsungAC::fan_mode_() {
   
   if(this->mode == climate::CLIMATE_MODE_DRY) {return SAMSUNGAC_FAN_AUTO;}
 
-  switch (this->fan_mode.value()){
+  if(!this->fan_mode.has_value()) {return SAMSUNGAC_FAN_AUTO;}
+
+  switch (*this->fan_mode){
     case climate::CLIMATE_FAN_HIGH:
       return SAMSUNGAC_FAN_HIGH;
     case climate::CLIMATE_FAN_MEDIUM:
@@ -128,7 +154,11 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
 
   if (!data.expect_item(SAMSUNGAC_HEADER_MARK, SAMSUNGAC_HEADER_SPACE)){return false;}
 
-  for (uint8_t section = 0; section <= (data.size() / (2 * 8)) / SAMSUNGAC_SECTION_LENGTH; section++) {
+  // Cap iterations at SAMSUNGAC_MAX_SECTIONS (the actual capacity of remote_state.raw)
+  // rather than deriving the bound from data.size(), which comes from the received signal
+  // and previously could exceed the buffer and write out of bounds. expect_item()/
+  // expect_space() below already stop us early if the signal is shorter than expected.
+  for (uint8_t section = 0; section < SAMSUNGAC_MAX_SECTIONS; section++) {
     if (!data.expect_item(SAMSUNGAC_SECTION_MARK, SAMSUNGAC_SECTION_SPACE)){return false;}
 
     for(uint8_t pos = 0; pos < SAMSUNGAC_SECTION_LENGTH; pos++){
@@ -162,7 +192,7 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
 
   if(remote_state.Power1 == remote_state.Power3)
   {
-    mode = (remote_state.Power3 == SAMSUNGAC_POWER_OFF? 5 : remote_state.Mode2);
+    mode = (remote_state.Power3 == SAMSUNGAC_POWER_OFF? SAMSUNGAC_MODE_OFF_SENTINEL : remote_state.Mode2);
     fan_mode = remote_state.Fan2;
     swing_mode = remote_state.Swing2;
     target_temperature = remote_state.Temp2;
@@ -199,7 +229,7 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
         return false;
       this->mode = climate::CLIMATE_MODE_HEAT;
       break;
-    case 5:
+    case SAMSUNGAC_MODE_OFF_SENTINEL:
       this->mode = climate::CLIMATE_MODE_OFF;
   }
 
@@ -236,15 +266,20 @@ bool SamsungAC::on_receive(remote_base::RemoteReceiveData data) {
       break;
   }
 
-  this->target_temperature = target_temperature + SAMSUNGAC_MIN_TEMP;
+  // Clamp: target_temperature is decoded from a raw 4-bit field, so a bit error could
+  // otherwise report a temperature outside the unit's supported range.
+  float decoded_temperature = target_temperature + SAMSUNGAC_MIN_TEMP;
+  if (decoded_temperature > SAMSUNGAC_MAX_TEMP) decoded_temperature = SAMSUNGAC_MAX_TEMP;
+  if (decoded_temperature < SAMSUNGAC_MIN_TEMP) decoded_temperature = SAMSUNGAC_MIN_TEMP;
+  this->target_temperature = decoded_temperature;
 
   this->publish_state();
   return true;
 }
 
-void SamsungAC::transmit_(SamsungProtocol state, uint16_t length) {  
+void SamsungAC::transmit_(SamsungProtocol &state, uint16_t length) {
 
-  checksum(state);
+  checksum(state, length);
 
   auto transmit = this->transmitter_->transmit();
   auto *data = transmit.get_data();
@@ -330,13 +365,20 @@ uint16_t SamsungAC::countBits(const uint64_t data, const uint8_t length, const b
     return length - count;
 }
 
-void SamsungAC::checksum(SamsungProtocol & state) {
+void SamsungAC::checksum(SamsungProtocol &state, uint16_t length) {
+  // Only checksum the sections that are actually part of this message; the 14-byte
+  // normal message has no 3rd section, and computing/writing one anyway meant reading
+  // whatever bytes happened to follow it in the union for no reason.
   uint8_t sectionsum = calcSectionChecksum(state.raw);
   state.Sum1Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum1Lower = GETBITS8(sectionsum, 0, 4);
+  if (length < SAMSUNGAC_SECTION_LENGTH * 2)
+    return;
   sectionsum = calcSectionChecksum(state.raw + SAMSUNGAC_SECTION_LENGTH);
   state.Sum2Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum2Lower = GETBITS8(sectionsum, 0, 4);
+  if (length < SAMSUNGAC_SECTION_LENGTH * 3)
+    return;
   sectionsum = calcSectionChecksum(state.raw + SAMSUNGAC_SECTION_LENGTH * 2);
   state.Sum3Upper = GETBITS8(sectionsum, 4, 4);
   state.Sum3Lower = GETBITS8(sectionsum, 0, 4);

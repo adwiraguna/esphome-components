@@ -3,6 +3,7 @@
 #include "esphome/components/climate_ir/climate_ir.h"
 
 #include <cinttypes>
+#include <string>
 
 namespace esphome {
 namespace samsungac {
@@ -135,7 +136,6 @@ union SamsungProtocol{
 
 const uint32_t SAMSUNGAC_HEADER_MARK = 600;
 const uint32_t SAMSUNGAC_HEADER_SPACE = 18000;
-const uint8_t SAMSUNGAC_SECTIONS = 2;
 const uint16_t SAMSUNGAC_SECTION_MARK = 3000;
 const uint16_t SAMSUNGAC_SECTION_SPACE = 9000;
 const uint16_t SAMSUNGAC_SECTION_GAP = 3000;
@@ -145,6 +145,9 @@ const uint16_t SAMSUNGAC_ZERO_SPACE = 470;
 const uint16_t SAMSUNGAC_SECTION_LENGTH = 7;
 const uint16_t SAMSUNGAC_MESSAGE_LENGTH = 14;
 const uint16_t SAMSUNGAC_EXTENDED_LENGTH = 21;
+// Hard cap on how many sections on_receive() may decode into SamsungProtocol::raw.
+// Derived from the storage size, not from the (untrusted) length of the received signal.
+const uint8_t SAMSUNGAC_MAX_SECTIONS = SAMSUNGAC_EXTENDED_LENGTH / SAMSUNGAC_SECTION_LENGTH;
 
 
 const uint8_t SAMSUNGAC_MIN_TEMP  = 16;  // C   Mask 0b11110000
@@ -154,6 +157,9 @@ const uint8_t SAMSUNGAC_MODE_COOL = 1;
 const uint8_t SAMSUNGAC_MODE_DRY = 2;
 const uint8_t SAMSUNGAC_MODE_FAN = 3;
 const uint8_t SAMSUNGAC_MODE_HEAT = 4;
+// Not a real value of the protocol's 3-bit Mode field (which only uses 0-4 above); used
+// internally in on_receive() as a sentinel meaning "the unit reported itself powered off".
+const uint8_t SAMSUNGAC_MODE_OFF_SENTINEL = 5;
 const uint8_t SAMSUNGAC_FAN_AUTO = 0;
 const uint8_t SAMSUNGAC_FAN_LOW = 2;
 const uint8_t SAMSUNGAC_FAN_MED = 4;
@@ -171,6 +177,14 @@ const uint8_t SAMSUNGAC_SWING_HORIZONTAL = 0b011; //3
 const uint8_t SAMSUNGAC_SWING_BOTH = 0b100; //4
 const uint8_t SAMSUNGAC_SWING_OFF = 0b111; //7
 
+// _.FanSpecial - mutually exclusive extra modes, only sent as part of a normal
+// (14-byte) state-update message. Values verified against IRremoteESP8266's
+// ir_Samsung.cpp (kSamsungAcFanSpecialOff/PowerfulOn/BreezeOn/EconoOn).
+const uint8_t SAMSUNGAC_FAN_SPECIAL_OFF = 0b000;       // 0
+const uint8_t SAMSUNGAC_FAN_SPECIAL_POWERFUL = 0b011;  // 3
+const uint8_t SAMSUNGAC_FAN_SPECIAL_WINDFREE = 0b101;  // 5 (aka "Breeze")
+const uint8_t SAMSUNGAC_FAN_SPECIAL_ECONO = 0b111;     // 7
+
 
 class SamsungAC : public climate_ir::ClimateIR {
  public:
@@ -178,15 +192,60 @@ class SamsungAC : public climate_ir::ClimateIR {
       : climate_ir::ClimateIR(SAMSUNGAC_MIN_TEMP, SAMSUNGAC_MAX_TEMP, 1.0f, true, true,
                               {climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM,
                                climate::CLIMATE_FAN_HIGH},
-                              {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL}) {}
+                              {climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL,
+                               climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH}) {}
   void control(const climate::ClimateCall &call){
-    if(call.get_fan_mode().has_value() 
-        && *call.get_fan_mode() != climate::CLIMATE_FAN_AUTO 
-        && (this->mode == climate::CLIMATE_MODE_AUTO || this->mode == climate::CLIMATE_MODE_DRY )){
+    // The unit ignores the requested fan speed while in Auto/Dry mode (fan_mode_() always
+    // forces it to Auto for transmission), so a fan-speed change alone is a no-op there.
+    // Coerce it to Auto and still apply the rest of the call instead of dropping the whole
+    // call, which used to also discard any bundled temperature/mode/swing change.
+    auto target_mode = call.get_mode().has_value() ? *call.get_mode() : this->mode;
+    if(call.get_fan_mode().has_value()
+        && *call.get_fan_mode() != climate::CLIMATE_FAN_AUTO
+        && (target_mode == climate::CLIMATE_MODE_AUTO || target_mode == climate::CLIMATE_MODE_DRY)){
+      climate::ClimateCall adjusted_call = call;
+      adjusted_call.set_fan_mode(climate::CLIMATE_FAN_AUTO);
+      climate_ir::ClimateIR::control(adjusted_call);
       return;
     }
 
     climate_ir::ClimateIR::control(call);
+  }
+
+  /// Set the display (front panel light) toggle and immediately transmit it, unless the
+  /// unit is off (these bits only exist in the normal state-update message, not the
+  /// power on/off message, so there's nothing useful to send while off).
+  void set_display(bool state) {
+    this->display_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the ioniser/purifier toggle and immediately transmit it.
+  void set_ion(bool state) {
+    this->ion_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the beeper toggle and immediately transmit it.
+  void set_beep(bool state) {
+    this->beep_ = state;
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
+  }
+  /// Set the mutually-exclusive special fan mode ("Off"/"Powerful"/"WindFree"/"Econo")
+  /// and immediately transmit it. Unrecognised values are treated as "Off".
+  void set_special_mode(const std::string &mode) {
+    if (mode == "Powerful") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_POWERFUL;
+    } else if (mode == "WindFree") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_WINDFREE;
+    } else if (mode == "Econo") {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_ECONO;
+    } else {
+      this->special_mode_ = SAMSUNGAC_FAN_SPECIAL_OFF;
+    }
+    if (this->mode != climate::CLIMATE_MODE_OFF)
+      this->transmit_state();
   }
 
  protected:
@@ -196,11 +255,11 @@ class SamsungAC : public climate_ir::ClimateIR {
   bool on_receive(remote_base::RemoteReceiveData data) override;
 
  private:
-  void transmit_(SamsungProtocol state, uint16_t length);
+  void transmit_(SamsungProtocol &state, uint16_t length);
   bool validChecksum(const uint8_t state[], const uint16_t length);
   uint8_t getSectionChecksum(const uint8_t *section);
   uint8_t calcSectionChecksum(const uint8_t *section);
-  void checksum(SamsungProtocol & state);
+  void checksum(SamsungProtocol &state, uint16_t length);
   uint16_t countBits(const uint8_t * const start, const uint16_t length,
                    const bool ones = true, const uint16_t init = 0);
   uint16_t countBits(const uint64_t data, const uint8_t length,
@@ -210,7 +269,14 @@ class SamsungAC : public climate_ir::ClimateIR {
   uint8_t swing_mode_();
   uint8_t target_temperature_();
 
-  climate::ClimateMode mode_before_{climate::CLIMATE_MODE_OFF}; 
+  climate::ClimateMode mode_before_{climate::CLIMATE_MODE_OFF};
+
+  // Extra toggles exposed via the samsungac switch/select platforms. These only take
+  // effect in the normal (14-byte) state-update message; see transmit_state().
+  bool display_{false};
+  bool ion_{false};
+  bool beep_{false};
+  uint8_t special_mode_{SAMSUNGAC_FAN_SPECIAL_OFF};
 };
 
 }  // namespace samsungac
