@@ -28,13 +28,15 @@ const uint32_t FAN_MAX = 0x40;
 const uint8_t TEMP_RANGE = TEMP_MAX - TEMP_MIN + 1;
 const uint32_t TEMP_MASK = 0XF00;
 const uint32_t TEMP_SHIFT = 8;
+// Offset baked into the 4-bit temperature nibble: TEMP_MIN (18) encodes as 3, TEMP_MAX
+// (30) encodes as 15 (0xF).
+const uint8_t TEMP_ENCODE_OFFSET = 15;
 
 const uint16_t BITS = 28;
 
 void LgIrClimateX::transmit_state() {
   uint32_t remote_state = 0x8800000;
 
-  // ESP_LOGD(TAG, "climate_lg_ir mode_before_ code: 0x%02X", modeBefore_);
   if (send_swing_cmd_) {
     send_swing_cmd_ = false;
     remote_state |= COMMAND_SWING;
@@ -43,7 +45,19 @@ void LgIrClimateX::transmit_state() {
       remote_state |= COMMAND_ON_AI;
     } else if (mode_before_ == climate::CLIMATE_MODE_OFF && this->mode != climate::CLIMATE_MODE_OFF) {
       remote_state |= COMMAND_ON;
-      this->mode = climate::CLIMATE_MODE_COOL;
+      // COMMAND_ON is a generic "power on" pulse - on real LG remotes it powers the unit
+      // on into its own default state, not necessarily the mode the user just asked for.
+      // Report the mode the user actually requested (instead of silently overwriting it)
+      // and, unless that default already matches (Cool), follow up shortly after with a
+      // normal mode frame - the same path any later mode change already takes below -
+      // so the physical unit ends up matching what's requested too.
+      if (this->mode != climate::CLIMATE_MODE_COOL) {
+        auto requested_mode = this->mode;
+        this->set_timeout("lg_ir_x_power_on_mode", 400, [this, requested_mode]() {
+          if (this->mode == requested_mode)
+            this->transmit_state();
+        });
+      }
     } else {
       switch (this->mode) {
         case climate::CLIMATE_MODE_COOL:
@@ -72,30 +86,33 @@ void LgIrClimateX::transmit_state() {
       remote_state |= FAN_AUTO;
     } else if (this->mode == climate::CLIMATE_MODE_COOL || this->mode == climate::CLIMATE_MODE_DRY ||
                this->mode == climate::CLIMATE_MODE_HEAT) {
-      switch (this->fan_mode.value()) {
-        case climate::CLIMATE_FAN_HIGH:
-          remote_state |= FAN_MAX;
-          break;
-        case climate::CLIMATE_FAN_MEDIUM:
-          remote_state |= FAN_MED;
-          break;
-        case climate::CLIMATE_FAN_LOW:
-          remote_state |= FAN_MIN;
-          break;
-        case climate::CLIMATE_FAN_AUTO:
-        default:
-          remote_state |= FAN_AUTO;
-          break;
+      if (!this->fan_mode.has_value()) {
+        remote_state |= FAN_AUTO;
+      } else {
+        switch (*this->fan_mode) {
+          case climate::CLIMATE_FAN_HIGH:
+            remote_state |= FAN_MAX;
+            break;
+          case climate::CLIMATE_FAN_MEDIUM:
+            remote_state |= FAN_MED;
+            break;
+          case climate::CLIMATE_FAN_LOW:
+            remote_state |= FAN_MIN;
+            break;
+          case climate::CLIMATE_FAN_AUTO:
+          default:
+            remote_state |= FAN_AUTO;
+            break;
+        }
       }
     }
 
     if (this->mode == climate::CLIMATE_MODE_HEAT_COOL) {
       this->fan_mode = climate::CLIMATE_FAN_AUTO;
-      // remote_state |= FAN_MODE_AUTO_DRY;
     }
     if (this->mode == climate::CLIMATE_MODE_COOL || this->mode == climate::CLIMATE_MODE_HEAT) {
       auto temp = (uint8_t) roundf(clamp<float>(this->target_temperature, TEMP_MIN, TEMP_MAX));
-      remote_state |= ((temp - 15) << TEMP_SHIFT);
+      remote_state |= ((temp - TEMP_ENCODE_OFFSET) << TEMP_SHIFT);
     }
   }
   transmit_(remote_state);
@@ -108,7 +125,7 @@ bool LgIrClimateX::on_receive(remote_base::RemoteReceiveData data) {
   if (!data.expect_item(this->header_high_, this->header_low_))
     return false;
 
-  for (nbits = 0; nbits < 32; nbits++) {
+  for (nbits = 0; nbits <= BITS; nbits++) {
     if (data.expect_item(this->bit_high_, this->bit_one_low_)) {
       remote_state = (remote_state << 1) | 1;
     } else if (data.expect_item(this->bit_high_, this->bit_zero_low_)) {
@@ -123,6 +140,11 @@ bool LgIrClimateX::on_receive(remote_base::RemoteReceiveData data) {
   ESP_LOGD(TAG, "Decoded 0x%02" PRIX32, remote_state);
   if ((remote_state & 0xFF00000) != 0x8800000)
     return false;
+
+  if (!this->verify_checksum_(remote_state)) {
+    ESP_LOGD(TAG, "Invalid checksum");
+    return false;
+  }
 
   if ((remote_state & COMMAND_MASK) == COMMAND_ON) {
     this->mode = climate::CLIMATE_MODE_COOL;
@@ -146,9 +168,16 @@ bool LgIrClimateX::on_receive(remote_base::RemoteReceiveData data) {
       this->mode = climate::CLIMATE_MODE_COOL;
     }
 
-    // Temperature
-    if (this->mode == climate::CLIMATE_MODE_COOL || this->mode == climate::CLIMATE_MODE_HEAT)
-      this->target_temperature = ((remote_state & TEMP_MASK) >> TEMP_SHIFT) + 15;
+    // Temperature - clamp since the 4-bit nibble can decode to a value outside the
+    // advertised [TEMP_MIN, TEMP_MAX] range on a bit error.
+    if (this->mode == climate::CLIMATE_MODE_COOL || this->mode == climate::CLIMATE_MODE_HEAT) {
+      uint8_t decoded_temp = ((remote_state & TEMP_MASK) >> TEMP_SHIFT) + TEMP_ENCODE_OFFSET;
+      if (decoded_temp < TEMP_MIN)
+        decoded_temp = TEMP_MIN;
+      if (decoded_temp > TEMP_MAX)
+        decoded_temp = TEMP_MAX;
+      this->target_temperature = decoded_temp;
+    }
 
     // Fan Speed
     if (this->mode == climate::CLIMATE_MODE_HEAT_COOL) {
@@ -202,5 +231,14 @@ void LgIrClimateX::calc_checksum_(uint32_t &value) {
   value |= (sum & mask);
 }
 
-}  // namespace climate_ir_lg
+bool LgIrClimateX::verify_checksum_(uint32_t value) {
+  // Recompute what the checksum nibble should be for the rest of the received value and
+  // compare it against what was actually received, instead of trusting a decoded signal
+  // (which could be noise, or an unrelated remote) without ever checking it.
+  uint32_t expected = value & ~0xFu;
+  calc_checksum_(expected);
+  return expected == value;
+}
+
+}  // namespace climate_ir_lg_x
 }  // namespace esphome

@@ -21,7 +21,17 @@ class LgIrClimateX : public climate_ir::ClimateIR {
 
   /// Override control to change settings of the climate device.
   void control(const climate::ClimateCall &call) override {
-    send_swing_cmd_ = call.get_swing_mode().has_value();
+    // This protocol only encodes one command per IR frame (COMMAND_SWING is a stateless
+    // toggle, distinct from COMMAND_COOL/HEAT/etc.), so bundling a swing change into the
+    // same call as a mode/fan/temp change would silently drop the latter if we always
+    // took the swing branch. Only treat this as a swing-toggle transmission when swing
+    // is the only thing changing, and it's an actual change from the current value (not
+    // a resend of it, which would otherwise flip the toggle the wrong way).
+    bool swing_requested = call.get_swing_mode().has_value() && *call.get_swing_mode() != this->swing_mode;
+    bool other_change_requested =
+        call.get_mode().has_value() || call.get_target_temperature().has_value() || call.get_fan_mode().has_value();
+    send_swing_cmd_ = swing_requested && !other_change_requested;
+
     // swing resets after unit powered off
     if (call.get_mode().has_value() && *call.get_mode() == climate::CLIMATE_MODE_OFF)
       this->swing_mode = climate::CLIMATE_SWING_OFF;
@@ -42,6 +52,7 @@ class LgIrClimateX : public climate_ir::ClimateIR {
   bool send_swing_cmd_{false};
 
   void calc_checksum_(uint32_t &value);
+  bool verify_checksum_(uint32_t value);
   void transmit_(uint32_t value);
 
   uint32_t header_high_;
@@ -53,5 +64,5 @@ class LgIrClimateX : public climate_ir::ClimateIR {
   climate::ClimateMode mode_before_{climate::CLIMATE_MODE_OFF};
 };
 
-}  // namespace climate_ir_lg
+}  // namespace climate_ir_lg_x
 }  // namespace esphome
