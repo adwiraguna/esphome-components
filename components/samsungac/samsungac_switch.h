@@ -1,5 +1,15 @@
 #pragma once
 
+// external_components syncs and compiles this whole directory as one unit, regardless
+// of which of samsungac's platforms (climate/switch/select) your YAML actually
+// configures. Guard on USE_SWITCH (defined only once something in your config loads
+// ESPHome's core `switch` component) so this file compiles to nothing rather than
+// failing with a missing esphome/components/switch/switch.h if you haven't added a
+// `switch:` block anywhere.
+#include "esphome/core/defines.h"
+
+#ifdef USE_SWITCH
+
 #include "esphome/components/switch/switch.h"
 #include "samsungac.h"
 
@@ -45,3 +55,5 @@ class SamsungACSwitch : public switch_::Switch {
 
 }  // namespace samsungac
 }  // namespace esphome
+
+#endif  // USE_SWITCH

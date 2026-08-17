@@ -1,5 +1,15 @@
 #pragma once
 
+// external_components syncs and compiles this whole directory as one unit, regardless
+// of which of samsungac's platforms (climate/switch/select) your YAML actually
+// configures. Guard on USE_SELECT (defined only once something in your config loads
+// ESPHome's core `select` component) so this file compiles to nothing rather than
+// failing with a missing esphome/components/select/select.h if you haven't added a
+// `select:` block anywhere.
+#include "esphome/core/defines.h"
+
+#ifdef USE_SELECT
+
 #include "esphome/components/select/select.h"
 #include "samsungac.h"
 
@@ -23,3 +33,5 @@ class SamsungACSpecialModeSelect : public select::Select {
 
 }  // namespace samsungac
 }  // namespace esphome
+
+#endif  // USE_SELECT
